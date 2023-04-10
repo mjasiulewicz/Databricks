@@ -1,0 +1,164 @@
+# Databricks notebook source
+
+install.packages("sparkR")
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(sparkR)
+
+
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Projekt dotyczy analizy sprzedży aut w Polsce z portalu Otomoto. Odpowie na pytanie w jakiej kategorii cenowej są najczęsciej wybierane auta, czy istnieje wpływ zmiennych na siebie, jak w czasie zmieniała się pojemność silnika, jak rozkładają się ceny w podziale na typ silnika oraz zostało stworzonych 5 charakterystycznych segmentów kupujących. Dane zostały zebrane w styczniu 2022.**
+# MAGIC 
+# MAGIC Źródło danych: https://www.kaggle.com/datasets/aleksandrglotov/car-prices-poland/code?select=Car_Prices_Poland_Kaggle.csv
+
+# COMMAND ----------
+
+#ŁADOWANIE DANYCH DO DATAFRAME
+require(SparkR)
+
+df1 <- read.df("dbfs:/FileStore/tables/Car_Prices_Poland_Kaggle.csv", "csv", header = TRUE)
+summary(df1)
+
+
+# COMMAND ----------
+
+# ZMIANA DF NA STANDARDOWY + ZMIANA TYPU 4 DANYCH NA NUMERYCZNE 
+df1 <- as.data.frame(df1)
+df1$year <- as.numeric(df1$year)
+df1$mileage <- as.numeric(df1$mileage)
+df1$vol_engine <- as.numeric(df1$vol_engine)
+df1$price <- as.numeric(df1$price)
+str(df1)
+
+# COMMAND ----------
+
+#SPRAWDZENIE CZY KTÓRAŚ KOLUMNA MA BRAKI 
+sapply(df1, function(x) length(x[!is.na(x)]))
+
+# COMMAND ----------
+
+#USUNIĘCIE KOLUMNY _C0 ORAZ GENRATION_NAME, PONIEWAŻ MA BARDZO DUŻO NULL
+df1 <- df1[ , !(names(df1) %in% c("_c0", "generation_name"))]
+str(df1)
+
+# COMMAND ----------
+
+# GEOGRAFICZNIE DANE BĘDZIEMY ANALIZOWAĆ DANE NA WOJEWÓDZTWACH, MIAST JEST ZBYT DUŻO
+unique(df1$province)
+table(df1$province)
+
+# COMMAND ----------
+
+#UJEDNOLICAMY DANE NA 16 WOJEWÓDZTW+ZAGRANICA
+df1$province[df1$province %in% c("(", "Berlin", "Niedersachsen", "Nordrhein-Westfalen", "Trenczyn", "Wiedeń", "Moravian-Silesian Region")] <- "Zagranica"
+
+
+# COMMAND ----------
+
+df1$price_group <- cut(df1$price, breaks = c(0, 10000, 50000, 100000, 250000, 500000, Inf), labels = c("0-100000", "10000-50000", "50000-100000", "100000-250000", "250000-500000", "powyżej 500000"))
+table(df1$price_group)
+# PONAD POŁOWA KUPOWANYCH AUT JEST Z PRZEDZIAŁU 10000-50000
+
+# COMMAND ----------
+
+# RYSUJEMY HISTOGRAM DLA CENY I ZAZNACZYMY MEDIANĘ
+mediana <- median(df1$price)
+ggplot(df1, aes(x = price)) + geom_histogram(color = 'black', fill = 'green', binwidth = 2000)+xlab("Cena (PLN)") + 
+                ylab("liczba aut") +
+  scale_x_continuous(limits = c(0, 250000)) + geom_vline(xintercept = mediana, color = "red", linetype = "dashed")
+
+# COMMAND ----------
+
+cor(df1[, c("year", "price", "mileage", "vol_engine")])
+# MACIERZ KORELACJI 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Macierz korelacji wskazuje wpływ roku zmiennej rok produkcji na zmienną cena oraz przebieg**
+
+# COMMAND ----------
+
+df2 <- subset(df1, year >= 2000 & year <= 2022, fuel != "Electric")
+df3 <- aggregate(vol_engine ~ year+fuel, data = df2, mean)
+ggplot(df3, aes(x = year, y = vol_engine, color=fuel)) +
+  geom_line() +
+  scale_x_continuous(breaks = unique(df3$year)) +
+  labs(x = "Rok produkcji", y = "Pojemność silnika (cm3)")+scale_x_continuous(breaks = seq(2000, 2022, by = 2))+scale_y_continuous(limits = c(1000, 2500), expand = c(0, 0))
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Narysowany wykres zmienności w czasie pojemności silnika potwierdza zjawisko "downsizingu"**
+
+# COMMAND ----------
+
+w2 <- ggplot(df1, aes(x=fuel , y=price , color=vol_engine)) + 
+  xlab("Typ silnika") + 
+  ylab("Ceny (PLN)") +  
+  geom_jitter(aes(color=vol_engine, alpha = 0.1, size = 0.1)) + # position = position_jitter(width = 0.2)
+  scale_color_gradient(name = "Pojemność silnika", low = 'green', high = 'blue')+
+  scale_shape_discrete(name = "Stan")+
+  theme(legend.position = 'bottom')
+
+w2
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Auta z silnikiem benzynowym osiągają najwyższe ceny**
+
+# COMMAND ----------
+
+#SEGMENTACJA
+df1_num <- df1[, c("year", "mileage", "vol_engine", "price")]
+df1_num_scaled <- scale(df1_num)
+kmeans_model <- kmeans(df1_num_scaled, 5)
+df1$group <- as.factor(kmeans_model$cluster)
+str(df1)
+
+# COMMAND ----------
+
+ggplot(df1, aes(x = group)) + 
+  geom_bar(aes(fill = group), stat = "count") + 
+  ggtitle("Segmentacja") + 
+  xlab("Grupy") + 
+  ylab("Liczba przypadków") + 
+  scale_fill_manual(values = c("red", "blue", "green", "yellow", "pink"))
+
+
+# COMMAND ----------
+
+str(df1)
+
+# COMMAND ----------
+
+#WYŚWIETLENIE ŚREDNICH WARTOŚCI NUMERYCZNYCH Z STWORZONYCH GRUP
+aggregate(df1[c("year", "mileage", "vol_engine", "price")], by=list(group=df1$group), mean)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Najliczniejsze grupy charakteryzują się niską lub umiarkowaną ceną auta. Są to samochody już dość stare i ze sporym przebiegiem. Zwraca uwagę wyższa niż w pozostałych grupach pojemność silnika w grupie 1. Grupa 4 i 5 to auta stosunkowo nowe, co logiczne z niewielkim przebiegiem przez co również sporo kosztują. Te dwie grupy liczą kilkukrotnie mniej kupujących niż pozostałe.**
+
+# COMMAND ----------
+
+mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+sapply(df1[,c("mark", "model", "fuel", "province")], mode)
+
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **PODSUMOWANIE:Najczęsciej wybieraną marką jest Audi, ale to do Opla należy najczęsciej wybierany model, a konkretnie Astra. Niezmiennie najczęsciej wybieranym silnikiem jest Benzyna. W województwie Mazowickim jest najwięcej kupujących. Najlepiej sprzedają się auta o niskiej i umiarkowanej cenie z niewielką pojemnością silnika, auta wyprodukowane w ostatnich latach są w grupie najrzadziej kupowanych. Istnieje również dośc liczna grupa kupujących auta starsze, co za tym ze idzie sporym przebiegiem, ale w wyższej cenie ze względu na dużą pojemność silnika.**
