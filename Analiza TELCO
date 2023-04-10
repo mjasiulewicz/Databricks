@@ -1,0 +1,184 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC **Analizie zostaną poddane dane fikcyjnej firmy telekomuniakcyjnej, a konkretnie prześledzone zostaną odejścia klientów. Autorem danych jest firma IBM.**
+# MAGIC 
+# MAGIC 
+# MAGIC Źródło danych: https://www.kaggle.com/datasets/johnflag/jb-link-telco-customer-churn
+
+# COMMAND ----------
+
+d = spark.read.format('csv').options(header = 'true', inferSchema='true', delimiter =',').load('/FileStore/tables/telco_churn_data.csv')
+
+# COMMAND ----------
+
+d.show()
+
+# COMMAND ----------
+
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.appName("UniqueValues").getOrCreate()
+unique_values = d.select("Churn Value").distinct().collect()
+print(unique_values)
+
+# COMMAND ----------
+
+d.head()
+
+# COMMAND ----------
+
+d.printSchema()
+
+# COMMAND ----------
+
+d.groupBy("Churn Value").count().show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **1869 klientów w bazie danych zdecyowało się zrezygnować z usług firmy**
+
+# COMMAND ----------
+
+d.groupBy("Churn Value").mean("Monthly Charge").show()
+
+# COMMAND ----------
+
+import pyspark.sql.functions as f
+d.groupBy("Churn Value")\
+  .agg(
+    f.round(f.mean("Monthly Charge"),2).alias("avg_monthly_charge"),
+    f.count("Monthly Charge").alias("cnt"),
+    f.max("Monthly Charge").alias("max_monthly_charge") )\
+  .show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Klienci, którzy zdecyowali się odejść płacili wyższe rachunki niż klienci, którzy zostali.**
+
+# COMMAND ----------
+
+d.select("Churn Reason").groupBy("Churn Reason").count().sort("count", ascending=False).limit(10).show(truncate=False)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Najczęstszym powodem odejścia były lepsze urządzenia i oferta u konkurencji**
+
+# COMMAND ----------
+
+from pyspark.sql.types import *
+
+# COMMAND ----------
+
+display(d)
+
+# COMMAND ----------
+
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType
+
+def get_loyalty(months):
+  if months < 12:
+    return "I"
+  elif months >= 12 and months < 24:
+    return "II"
+  else:
+    return "III"
+
+udf_get_loyalty = udf(get_loyalty, StringType())
+df = d.withColumn("Loyality", udf_get_loyalty(d["Tenure in Months"]))
+
+
+# COMMAND ----------
+
+df_loyality = df.groupby("loyality").count()
+display(df_loyality)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Klienci zostali podzielieni na 3 grupy pod względem stażu w miesiącach. Najliczniejsza grupa jest z klientami lojalnymi powyżej 2 lat.**
+
+# COMMAND ----------
+
+df_loyality.createOrReplaceTempView("tmp_cust_segment")
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC show tables
+
+# COMMAND ----------
+
+d_tmp = spark.sql("select * from tmp_cust_segment")
+
+# COMMAND ----------
+
+d_tmp.show()
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC select * from perm_cust_segment
+
+# COMMAND ----------
+
+d_perm = spark.sql("select * from tmp_cust_segment")
+
+# COMMAND ----------
+
+d_perm = spark.sql("select * from perm_cust_segment")
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC show tables
+
+# COMMAND ----------
+
+d_perm.show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Dane z pogrupowanymi pod względem lojalnością klientami zostały dodane do tabeli w SQL**
+
+# COMMAND ----------
+
+display(df)
+
+# COMMAND ----------
+
+import matplotlib.pyplot as plt
+df_pandas = df.toPandas()
+
+column = df_pandas['Tenure in Months']
+
+plt.hist(column)
+
+plt.title('Histogram')
+plt.xlabel('Staż w miesiącach')
+plt.ylabel('Ilość klientów')
+
+plt.show()
+
+# COMMAND ----------
+
+series = df_pandas["Contract"].value_counts()
+
+series = (series / series.sum())*100
+
+plt.pie(series, labels=series.index, autopct='%.1f%%')
+plt.axis('equal')
+plt.show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Większość klientów korzysta z płatności miesięcznych, chociaż generalnie w porównaniu do wszystkich klientów długotermnowych są to podobnie liczne grupy**
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **PODSUMOWANIE: Wiekszość klientów sieci jest lojalnych i długoterminowo korzysta z usług firmy. Aby ograniczyć odejścia klientów należałoby zaproponować klientom lepsze urządzenia i wsparcie podczas umowy. Ponieważ wielu klientów dopiero zaczyna współpracę z firmą istotne jest, aby dbać o ich zadowolenie z usług, żeby chcieli koontynuować długoterminową współpracę.**
